@@ -34,3 +34,4 @@ ENV/
 .env
 *.pem
 *.key
+*.yaml
