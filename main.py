@@ -9,6 +9,8 @@ import requests
 
 # This is a test
 
+# Test 2
+
 # Environment variables
 RPC_URL = os.environ.get('RPC_URL')
 LBP_CA = os.environ.get('LBP_CA')           # Liquidity book pair contract
