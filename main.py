@@ -7,15 +7,13 @@ from datetime import datetime
 import os
 import requests
 
-# This is a test
-
-# Test 2
-
 # Environment variables
 RPC_URL = os.environ.get('RPC_URL')
-LBP_CA = os.environ.get('LBP_CA')           # Liquidity book pair contract
-LBROUTER_CA = os.environ.get('LBROUTER_CA')      # Liquidity router contract
+LBP_CA = os.environ.get('LBP_CA')                   # Liquidity book pair contract
+LBROUTER_CA = os.environ.get('LBROUTER_CA')         # Liquidity router contract
+REWARDER_CA  = os.environ.get('REWARDER_CA')        # Pair rewarder contract
 PRIVATE_KEY = os.environ.get('PRIVATE_KEY')
+REWARD_WALLET = os.environ.get('REWARD_WALLET')
 
 PROJECT_ID = os.environ.get('PROJECT_ID')
 BUCKET_NAME = os.environ.get('BUCKET_NAME')
@@ -47,6 +45,8 @@ class SonicConnection:
             self.lbrouter_abi = json.load(f)
         with open('erc20_contract_abi.json', 'r') as f:
             self.erc20_contract_abi = json.load(f)
+        with open('rewarder_contract_abi.json', 'r') as f:
+            self.rewarder_abi = json.load(f)
         
         # Initialize contracts
         self.lbp_contract = self.web3.eth.contract(
@@ -57,6 +57,10 @@ class SonicConnection:
             address = self.web3.to_checksum_address(LBROUTER_CA),
             abi = self.lbrouter_abi
             )
+        self.rewarder_contract = self.web3.eth.contract(
+            address = self.web3.to_checksum_address(REWARDER_CA),
+            abi = self.rewarder_abi
+        )
         
         # Find bin steps
         self.bin_step = self.lbp_contract.functions.getBinStep().call()
@@ -396,8 +400,110 @@ class SonicConnection:
             receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
 
             return receipt.status == 1
+        
         except Exception as e:
             print(f"Failed to remove liquidity: {e}")
+            return False
+        
+    def claim_rewards(self, position):
+        """Claim any pending rewards for the specified bin"""
+        try:
+            bin_id = int(position["bin_id"])
+
+            pending_rewards_wei = self.rewarder_contract.functions.getPendingRewards(
+                self.wallet_address,
+                [bin_id]
+            ).call()
+
+            pending_rewards = pending_rewards_wei / (10 ** 18)
+
+            if pending_rewards > 0:
+                claim_tx = self.rewarder_contract.functions.claim(
+                    self.wallet_address,
+                    [bin_id]
+                ).build_transaction({
+                    'from': self.wallet_address,
+                    'gas': 500000,
+                    'gasPrice': self.web3.eth.gas_price,
+                    'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
+                })
+
+                 # Sign and send transaction
+                signed_tx = self.web3.eth.account.sign_transaction(
+                    claim_tx, self.account._private_key
+                )
+
+                tx_hash = self.web3.eth.send_raw_transaction(
+                    signed_tx.rawTransaction
+                )
+
+                # Wait for transaction receipt
+                receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+
+                if receipt.status == 1:
+                    print("Successfully claimed rewards")
+                    return True
+                else:
+                    print("Failed to claim rewards")
+                    return False
+            else:
+                print("No rewards to claim")
+                return True
+
+        except Exception as e:
+            print("Failed to claim rewards")
+            return False
+    
+    def transfer_rewards(self):
+        """Send all reward tokens to central rewards wallet"""
+        try:
+            # Get current METRO token address
+            metro_token_address = self.rewarder_contract.functions.getRewardToken().call()
+
+            # Instantiate metro contract
+            metro_contract = self.web3.eth.contract(
+                address = self.web3.to_checksum_address(metro_token_address),
+                abi = self.erc20_contract_abi
+            )
+
+            # Check current metro balance
+            symbol, decimals, balance_wei, balance = self.get_token_balance(metro_token_address)
+
+            if balance_wei <= 0:
+                print("No METRO tokens to send")
+                return True
+            
+            transfer_tx = metro_contract.functions.transfer(
+                self.web3.to_checksum_address(REWARD_WALLET),
+                balance_wei
+            ).build_transaction({
+                'from': self.wallet_address,
+                'gas': 500000,
+                'gasPrice': self.web3.eth.gas_price,
+                'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
+            })
+
+                # Sign and send transaction
+            signed_tx = self.web3.eth.account.sign_transaction(
+                transfer_tx, self.account._private_key
+            )
+
+            tx_hash = self.web3.eth.send_raw_transaction(
+                signed_tx.rawTransaction
+            )
+
+            # Wait for transaction receipt
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+
+            if receipt.status == 1:
+                print("METRO successfully transferred")
+                return True
+            else:
+                print("METRO transfer failed")
+                return False
+            
+        except Exception as e:
+            print("Failed to transfer rewards")
             return False
 
 class CloudStorageHandler:
@@ -441,24 +547,9 @@ def manage_liquidity(request):
             print("Failed to connect to Sonic network")
             return {"error": "Failed to connect to Sonic network"}
 
-        """
-        message = f"USDT/USDC price Change! New price: {current_price['price']:.6f}\nBin ID: {current_price['active_bin_id']}"
-        message += f"\nPrevious: {previous_data['price']:.6f}"
-        message += f"\nChange: {result['price_change_percent']:.3f}%" 
-        
-        pushover_data = {
-            'token': PUSHOVER_TOKEN,
-            'user': PUSHOVER_USER,
-            'message': message,
-            'title': 'Metro Price Alert'
-        }
-
-        # Send notification
-        requests.post("https://api.pushover.net/1/messages.json", data=pushover_data)
-        """
-
         # Generate filenames
         file_prefix = sonic.get_file_prefix()
+        op_file = f"{file_prefix}_time.json"
         price_file = f"{file_prefix}_price.json"
         position_file = f"{file_prefix}_position.json"
 
@@ -469,6 +560,22 @@ def manage_liquidity(request):
         valid_position = False
         change_acceptable = False
 
+        # Read and initialize operational data
+        last_op_data = data.read_json_file(op_file)
+
+        current_op_data = {
+            "timestamp": datetime.now().isoformat()
+        }
+
+        data.write_json_file(op_file, current_op_data)
+
+        if last_op_data is None:
+            last_op_data = current_op_data
+
+        last_date = datetime.fromisoformat(last_op_data["timestamp"]).date()
+        current_date = datetime.fromisoformat(current_op_data["timestamp"]).date()
+
+        # Read and initialise price data
         last_price_data = data.read_json_file(price_file)
 
         current_price_data = sonic.get_current_price()
@@ -513,28 +620,35 @@ def manage_liquidity(request):
         print(f"Price difference percentage: {price_diff_pc}%")
         print(f"Change acceptable: {change_acceptable}")
 
-
         if valid_position and not first_run:
-            
-            print("Test: Entering managment logic")
 
+            # Claim and transfer rewards daily
+            if current_date != last_date:
+                if sonic.claim_rewards(last_position):
+                    print("Daily METRO rewards claim successful")
+                    if sonic.transfer_rewards():
+                        print("Daily rewards transfer successful")
+                    else:
+                        print("Daily rewards transfer failed")
+                else:
+                    print("Daily METRO rewards claim failed")
+
+            # Liquidity management
             if price_changed:
                 try:
-
                     print("Test: Attempting to remove liquidity")
 
                     if sonic.remove_liquidity(last_position):
-
-                        print("Test: Liquidity removed sucessfully")
-
+                        sonic.claim_rewards(last_position)
                         current_position = sonic.add_liquidity()
-                        if current_position:
-                            
 
+                        if current_position:
                             print("Test: Liquidity added successfully")
+
                         else:
                             failure_count(file_prefix)
                             return {"error": "Failed to add liquidity"}
+                        
                     else:
                         failure_count(file_prefix)
                         return {"error": "Failed to remove liquidity"}
