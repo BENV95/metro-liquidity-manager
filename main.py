@@ -676,6 +676,7 @@ def manage_liquidity(request):
         return {"status": "success", "position": current_position}
 
     except Exception as e:
+        print(f"error: Function failed: {str(e)}")
         return {"error": f"Function failed: {str(e)}"}
 
 def failure_count(file_prefix):
