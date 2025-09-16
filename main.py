@@ -549,7 +549,7 @@ def manage_liquidity(request):
 
         # Generate filenames
         file_prefix = sonic.get_file_prefix()
-        op_file = f"{file_prefix}_time.json"
+        op_file = f"{file_prefix}_op.json"
         price_file = f"{file_prefix}_price.json"
         position_file = f"{file_prefix}_position.json"
 
@@ -572,8 +572,8 @@ def manage_liquidity(request):
         if last_op_data is None:
             last_op_data = current_op_data
 
-        last_date = datetime.fromisoformat(last_op_data["timestamp"]).date()
-        current_date = datetime.fromisoformat(current_op_data["timestamp"]).date()
+        last_time = datetime.fromisoformat(last_op_data["timestamp"]).time()
+        current_time = datetime.fromisoformat(current_op_data["timestamp"]).time()
 
         # Read and initialise price data
         last_price_data = data.read_json_file(price_file)
@@ -623,6 +623,7 @@ def manage_liquidity(request):
         if valid_position and not first_run:
 
             # Claim and transfer rewards daily
+            """
             if current_date != last_date:
                 if sonic.claim_rewards(last_position):
                     print("Daily METRO rewards claim successful")
@@ -632,6 +633,29 @@ def manage_liquidity(request):
                         print("Daily rewards transfer failed")
                 else:
                     print("Daily METRO rewards claim failed")
+            """
+
+            # Debug the date comparison
+            print(f"DEBUG: last_time = {last_time}")
+            print(f"DEBUG: current_time = {current_time}")
+            print(f"DEBUG: dates different? {current_time != last_time}")
+            print(f"DEBUG: valid_position = {valid_position}")
+            print(f"DEBUG: first_run = {first_run}")
+            
+            # Claim and transfer rewards daily
+            if current_time != last_time:
+                print("DEBUG: Entering daily reward claiming section")
+                
+                if sonic.claim_rewards(last_position):
+                    print("Daily METRO rewards claim successful")
+                    if sonic.transfer_rewards():  # Fixed typo
+                        print("Daily rewards transfer successful")
+                    else:
+                        print("Daily rewards transfer failed")
+                else:
+                    print("Daily METRO rewards claim failed")
+            else:
+                print("DEBUG: Not claiming rewards - same date as last run")
 
             # Liquidity management
             if price_changed:
