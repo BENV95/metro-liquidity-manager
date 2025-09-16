@@ -453,33 +453,25 @@ class SonicConnection:
         except Exception as e:
             print("Failed to claim rewards")
             return False
-
+    
     def transfer_rewards(self):
         """Send all reward tokens to central rewards wallet"""
         try:
-            print("DEBUG: Starting transfer_rewards function")
-            
             # Get current METRO token address
             metro_token_address = self.rewarder_contract.functions.getRewardToken().call()
-            print(f"DEBUG: METRO token address: {metro_token_address}")
 
             # Instantiate metro contract
             metro_contract = self.web3.eth.contract(
                 address = self.web3.to_checksum_address(metro_token_address),
                 abi = self.erc20_contract_abi
             )
-            print("DEBUG: METRO contract instantiated")
 
             # Check current metro balance
             symbol, decimals, balance_wei, balance = self.get_token_balance(metro_token_address)
-            print(f"DEBUG: METRO balance: {balance} {symbol} ({balance_wei} wei)")
-            print(f"DEBUG: REWARD_WALLET: {REWARD_WALLET}")
 
             if balance_wei <= 0:
                 print("No METRO tokens to send")
                 return True
-            
-            print(f"DEBUG: Building transfer transaction for {balance} METRO")
             
             transfer_tx = metro_contract.functions.transfer(
                 self.web3.to_checksum_address(REWARD_WALLET),
@@ -490,26 +482,18 @@ class SonicConnection:
                 'gasPrice': self.web3.eth.gas_price,
                 'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
             })
-            
-            print("DEBUG: Transaction built, signing...")
 
-            # Sign and send transaction
+                # Sign and send transaction
             signed_tx = self.web3.eth.account.sign_transaction(
                 transfer_tx, self.account._private_key
             )
-            
-            print("DEBUG: Transaction signed, sending...")
 
             tx_hash = self.web3.eth.send_raw_transaction(
                 signed_tx.rawTransaction
             )
-            
-            print(f"DEBUG: Transaction sent, hash: {tx_hash.hex()}")
 
             # Wait for transaction receipt
             receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
-            
-            print(f"DEBUG: Transaction receipt status: {receipt.status}")
 
             if receipt.status == 1:
                 print("METRO successfully transferred")
@@ -517,10 +501,9 @@ class SonicConnection:
             else:
                 print("METRO transfer failed")
                 return False
-                
+            
         except Exception as e:
-            print(f"Failed to transfer rewards: {e}")
-            print(f"DEBUG: Exception type: {type(e).__name__}")
+            print("Failed to transfer rewards")
             return False
 
 class CloudStorageHandler:
@@ -566,7 +549,7 @@ def manage_liquidity(request):
 
         # Generate filenames
         file_prefix = sonic.get_file_prefix()
-        op_file = f"{file_prefix}_op.json"
+        op_file = f"{file_prefix}_time.json"
         price_file = f"{file_prefix}_price.json"
         position_file = f"{file_prefix}_position.json"
 
@@ -589,8 +572,8 @@ def manage_liquidity(request):
         if last_op_data is None:
             last_op_data = current_op_data
 
-        last_time = datetime.fromisoformat(last_op_data["timestamp"]).time()
-        current_time = datetime.fromisoformat(current_op_data["timestamp"]).time()
+        last_date = datetime.fromisoformat(last_op_data["timestamp"]).date()
+        current_date = datetime.fromisoformat(current_op_data["timestamp"]).date()
 
         # Read and initialise price data
         last_price_data = data.read_json_file(price_file)
@@ -640,7 +623,6 @@ def manage_liquidity(request):
         if valid_position and not first_run:
 
             # Claim and transfer rewards daily
-            """
             if current_date != last_date:
                 if sonic.claim_rewards(last_position):
                     print("Daily METRO rewards claim successful")
@@ -650,29 +632,6 @@ def manage_liquidity(request):
                         print("Daily rewards transfer failed")
                 else:
                     print("Daily METRO rewards claim failed")
-            """
-
-            # Debug the date comparison
-            print(f"DEBUG: last_time = {last_time}")
-            print(f"DEBUG: current_time = {current_time}")
-            print(f"DEBUG: dates different? {current_time != last_time}")
-            print(f"DEBUG: valid_position = {valid_position}")
-            print(f"DEBUG: first_run = {first_run}")
-            
-            # Claim and transfer rewards daily
-            if current_time != last_time:
-                print("DEBUG: Entering daily reward claiming section")
-                
-                if sonic.claim_rewards(last_position):
-                    print("Daily METRO rewards claim successful")
-                    if sonic.transfer_rewards():  # Fixed typo
-                        print("Daily rewards transfer successful")
-                    else:
-                        print("Daily rewards transfer failed")
-                else:
-                    print("Daily METRO rewards claim failed")
-            else:
-                print("DEBUG: Not claiming rewards - same date as last run")
 
             # Liquidity management
             if price_changed:
