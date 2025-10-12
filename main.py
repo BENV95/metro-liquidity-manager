@@ -558,18 +558,13 @@ class SonicConnection:
     def trade_metro_to_usdc(self):
         """Trade METRO rewards for USDC"""
         try:
-            # Get token addresses
+            # Get input token details
             token_x = self.metro_token_address
-            token_y = USDC_TOKEN
-
             symbol_x, decimals_x, balance_x_wei, balance_x = self.get_token_balance(token_x)
-            symbol_y, decimals_y, balance_y_wei, balance_y = self.get_token_balance(token_y)
-
             amount_in_x_wei = balance_x_wei   # Trade all available METRO
             amount_in_x = amount_in_x_wei / (10 ** decimals_x)
-
-            amount_min_y_wei = 1  ### This can be optimised later with slippage control and output simulation using the lbp contract getLBPairInformation information
-
+            
+            # Check that there is something to trade
             if amount_in_x_wei == 0:
                 print("No METRO tokens to trade")
                 return True
@@ -577,12 +572,29 @@ class SonicConnection:
             # Check that the token is approved for spending by the LBRouter contract, and if not approve it
             if not self.check_token_approval(token_x, LBROUTER_CA):
                 token_x_approved = self.approve_token(token_x, LBROUTER_CA)
-            
-            path = (
-                [0, 4],                             # Bin steps for each hop    [METRO->S, S->USDC]
-                [0, 2],                             # Versions for each hop     [METRO->S, S->USDC]
-                [token_x, NATIVE_TOKEN, token_y]    # Token path (2 hops)
-            )
+
+            # Trade to native token if balance for gas is low
+            if self.get_native_balance().balance_s > 5:
+                path = (
+                    [0, 4],                             # Bin steps for each hop    [METRO->S, S->USDC]
+                    [0, 2],                             # Versions for each hop     [METRO->S, S->USDC]
+                    [token_x, NATIVE_TOKEN, token_y]    # Token path (2 hops)
+                )
+                token_y = USDC_TOKEN
+
+            else:
+                path = (
+                    [0],                                # Bin steps for each hop    [METRO->USDC]
+                    [0],                                # Versions for each hop     [METRO->USDC]
+                    [token_x, NATIVE_TOKEN]             # Token path (1 hop)
+                )
+                token_y = NATIVE_TOKEN
+
+            # Get output token details for logging
+            symbol_y, decimals_y, balance_y_wei, balance_y = self.get_token_balance(token_y)
+
+            # Set minimum output amount
+            amount_min_y_wei = 1  ### This can be optimised later with slippage control and output simulation using the lbp contract getLBPairInformation information
                 
             trade_params = (
                     amount_in_x_wei,         # Amount token x in
@@ -621,7 +633,7 @@ class SonicConnection:
             receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
 
             if receipt.status == 1:
-                print(f"{amount_in_x} METRO successfully traded for USDC")
+                print(f"{amount_in_x} {symbol_x} successfully traded for {symbol_y}")
                 return True
             else:
                 print("METRO to USDC trade failed")
@@ -757,7 +769,7 @@ def manage_liquidity(request):
                         else:
                             print("Daily rewards transfer failed")
                     elif REWARD_CONF == 1:
-                        if sonic.trade_rewards():
+                        if sonic.trade_metro_to_usdc():
                             print("Daily rewards trade successful")
                         else:
                             print("Daily rewards trade failed")
