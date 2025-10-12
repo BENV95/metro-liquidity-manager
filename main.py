@@ -812,6 +812,8 @@ def manage_liquidity(request):
             except Exception as e:
                 return {"error": f"Failed to add liquidity: {e}"}
 
+        sonic.trade_metro_to_usdc()
+
         if current_position:
             data.write_json_file(position_file, current_position)
             data.write_json_file(price_file, current_price_data)
