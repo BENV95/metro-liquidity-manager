@@ -9,11 +9,17 @@ import requests
 
 # Environment variables
 RPC_URL = os.environ.get('RPC_URL')
+
+NATIVE_TOKEN = '0x039e2fB66102314Ce7b64Ce5Ce3E5183bc94aD38' # Sonic native token (S)
+USDC_TOKEN = '0x29219dd400f2bf60e5a23d13be72b486d4038894' # USDC token address on Sonic
+
 LBP_CA = os.environ.get('LBP_CA')                   # Liquidity book pair contract
 LBROUTER_CA = os.environ.get('LBROUTER_CA')         # Liquidity router contract
 REWARDER_CA  = os.environ.get('REWARDER_CA')        # Pair rewarder contract
 PRIVATE_KEY = os.environ.get('PRIVATE_KEY')
 REWARD_WALLET = os.environ.get('REWARD_WALLET')
+
+REWARD_CONF = os.environ.get('REWARD_CONF')
 
 PROJECT_ID = os.environ.get('PROJECT_ID')
 BUCKET_NAME = os.environ.get('BUCKET_NAME')
@@ -33,6 +39,7 @@ class SonicConnection:
         self.web3 = Web3(Web3.HTTPProvider(RPC_URL))
         self.lbp_contract = None
         self.lbrouter_contract = None
+        self.rewarder_contract = None
 
         # Load Sonic account
         self.account = self.web3.eth.account.from_key(PRIVATE_KEY)
@@ -62,6 +69,9 @@ class SonicConnection:
             abi = self.rewarder_abi
         )
         
+        # Get current METRO token address
+        self.metro_token_address = self.rewarder_contract.functions.getRewardToken().call()
+
         # Find bin steps
         self.bin_step = self.lbp_contract.functions.getBinStep().call()
     
@@ -148,11 +158,12 @@ class SonicConnection:
         """Get native token balance"""
         try:
             symbol = "S"
+            ### ADD CONTRACT ADDRESS HERE
             decimals = 18
-            balance_wei = self.web3.eth.get_balance(self.wallet_address)
-            balance_s = float(self.web3.from_wei(balance_wei, 'ether'))
+            balance_s_wei = self.web3.eth.get_balance(self.wallet_address)
+            balance_s = float(self.web3.from_wei(balance_s_wei, 'ether'))
 
-            return symbol, decimals, balance_wei, balance_s
+            return symbol, decimals, balance_s_wei, balance_s
 
         except Exception as e:
             print("Failed to get native balance")
@@ -172,6 +183,28 @@ class SonicConnection:
             "token_x": token_x,
             "token_y": token_y
         }
+    
+    def gas_optimizer(self, transaction, fallback_gas, buffer_factor=1.2):
+        """
+        Estimate and optimize gas for a transaction and add a safety buffer
+
+        Args:
+            transaction: The built transaction dictionary
+            buffer_factor: Safety factor to multiply the gas estimate by (default 1.2)
+
+        Returns:
+            int: Estimated gas with buffer applied
+        """
+        try:
+            # Get base estimate from network
+            estimated_gas = self.web3.eth.estimate_gas(transaction)
+            # Apply buffer
+            optimized_gas = int(estimated_gas * buffer_factor)
+            return optimized_gas
+
+        except Exception as e:
+            print(f"Gas estimation failed: {e}")
+            return fallback_gas
 
     def check_token_approval(self, token_address: str, spender_address: str) -> bool:
         """Check token approval status"""
@@ -209,11 +242,16 @@ class SonicConnection:
             ).build_transaction(
                 {
                     'from': self.wallet_address,
-                    'gas': 100000,
                     'gasPrice': self.web3.eth.gas_price,
                     'nonce': self.web3.eth.get_transaction_count(self.wallet_address)
                 }
             )
+
+            # Estimate and optimize gas
+            optimized_gas = self.gas_optimizer(approve_tx, 100000)
+
+            # Add gas to transaction
+            approve_tx['gas'] = optimized_gas
 
             # Sign and send transaction
             signed_tx = self.web3.eth.account.sign_transaction(
@@ -246,8 +284,8 @@ class SonicConnection:
 
             # Get token addresses
             token_x, token_y = self.get_token_addresses()
-            symbol_x, decimals_x, balance_wei_x, balance_x = self.get_token_balance(token_x)
-            symbol_y, decimals_y, balance_wei_y, balance_y = self.get_token_balance(token_y)
+            symbol_x, decimals_x, balance_x_wei, balance_x = self.get_token_balance(token_x)
+            symbol_y, decimals_y, balance_y_wei, balance_y = self.get_token_balance(token_y)
 
             # Approve token spending if required
             if not self.check_token_approval(token_x, LBROUTER_CA):
@@ -297,12 +335,19 @@ class SonicConnection:
             # Build transaction
             add_tx = self.lbrouter_contract.functions.addLiquidity(
                 add_params
-            ).build_transaction({
-                'from': self.wallet_address,
-                'gas': 500000,
-                'gasPrice': self.web3.eth.gas_price,
-                'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
-            })
+            ).build_transaction(
+                {
+                    'from': self.wallet_address,
+                    'gasPrice': self.web3.eth.gas_price,
+                    'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
+                }
+            )
+
+            # Estimate and optimize gas
+            optimized_gas = self.gas_optimizer(add_tx, 500000)
+
+            # Add gas to transaction
+            add_tx['gas'] = optimized_gas
 
             # Sign and send transaction
             signed_tx = self.web3.eth.account.sign_transaction(
@@ -340,6 +385,7 @@ class SonicConnection:
         try:
             token_x, token_y = self.get_token_addresses()
             bin_id = int(position["bin_id"])
+
             # Get previous bin amount
             amount = self.lbp_contract.functions.balanceOf(
                 self.wallet_address,
@@ -348,10 +394,6 @@ class SonicConnection:
 
             if amount == 0:
                 return True
-
-            print(f"bin_step: {self.bin_step} (type: {type(self.bin_step).__name__})")
-            print(f"bin_id: {bin_id} (type: {type(bin_id).__name__})")
-            print(f"amount: {amount} (type: {type(amount).__name__})")
 
             # Prepare liquidity parameters
             remove_params = (
@@ -366,26 +408,22 @@ class SonicConnection:
                 int(datetime.now().timestamp()) + 3600
             )
 
-            print(f"Remove liquidity parameters:")
-            print(f"  token_x: {remove_params[0]}")
-            print(f"  token_y: {remove_params[1]}")
-            print(f"  bin_step: {remove_params[2]}")
-            print(f"  amountXMin: {remove_params[3]}")
-            print(f"  amountYMin: {remove_params[4]}")
-            print(f"  ids: {remove_params[5]}")
-            print(f"  amounts: {remove_params[6]}")
-            print(f"  to: {remove_params[7]}")
-            print(f"  deadline: {remove_params[8]}")
-
             # Build transaction
             remove_tx = self.lbrouter_contract.functions.removeLiquidity(
                 *remove_params
-            ).build_transaction({
-                'from': self.wallet_address,
-                'gas': 1000000,
-                'gasPrice': self.web3.eth.gas_price,
-                'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
-            })
+            ).build_transaction(
+                {
+                    'from': self.wallet_address,
+                    'gasPrice': self.web3.eth.gas_price,
+                    'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
+                }
+            )
+
+            # Estimate and optimize gas
+            optimized_gas = self.gas_optimizer(remove_tx, 1000000)
+
+            # Add gas to transaction
+            remove_tx['gas'] = optimized_gas
 
             # Sign and send transaction
             signed_tx = self.web3.eth.account.sign_transaction(
@@ -398,6 +436,8 @@ class SonicConnection:
 
             # Wait for transaction receipt
             receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+
+            print(f"Liquidity sucessfully removed from bin {bin_id}")
 
             return receipt.status == 1
         
@@ -423,10 +463,15 @@ class SonicConnection:
                     [bin_id]
                 ).build_transaction({
                     'from': self.wallet_address,
-                    'gas': 500000,
                     'gasPrice': self.web3.eth.gas_price,
                     'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
                 })
+
+                # Estimate and optimize gas
+                optimized_gas = self.gas_optimizer(claim_tx, 500000)
+
+                # Add gas to transaction
+                claim_tx['gas'] = optimized_gas
 
                  # Sign and send transaction
                 signed_tx = self.web3.eth.account.sign_transaction(
@@ -457,17 +502,14 @@ class SonicConnection:
     def transfer_rewards(self):
         """Send all reward tokens to central rewards wallet"""
         try:
-            # Get current METRO token address
-            metro_token_address = self.rewarder_contract.functions.getRewardToken().call()
-
             # Instantiate metro contract
             metro_contract = self.web3.eth.contract(
-                address = self.web3.to_checksum_address(metro_token_address),
+                address = self.web3.to_checksum_address(self.metro_token_address),
                 abi = self.erc20_contract_abi
             )
 
             # Check current metro balance
-            symbol, decimals, balance_wei, balance = self.get_token_balance(metro_token_address)
+            symbol, decimals, balance_wei, balance = self.get_token_balance(self.metro_token_address)
 
             if balance_wei <= 0:
                 print("No METRO tokens to send")
@@ -476,14 +518,21 @@ class SonicConnection:
             transfer_tx = metro_contract.functions.transfer(
                 self.web3.to_checksum_address(REWARD_WALLET),
                 balance_wei
-            ).build_transaction({
-                'from': self.wallet_address,
-                'gas': 500000,
-                'gasPrice': self.web3.eth.gas_price,
-                'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
-            })
+            ).build_transaction(
+                {
+                    'from': self.wallet_address,
+                    'gasPrice': self.web3.eth.gas_price,
+                    'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
+                }
+            )
 
-                # Sign and send transaction
+            # Estimate and optimize gas
+            optimized_gas = self.gas_optimizer(transfer_tx, 500000)
+
+            # Add gas to transaction
+            transfer_tx['gas'] = optimized_gas
+
+            # Sign and send transaction
             signed_tx = self.web3.eth.account.sign_transaction(
                 transfer_tx, self.account._private_key
             )
@@ -506,6 +555,82 @@ class SonicConnection:
             print("Failed to transfer rewards")
             return False
 
+    def trade_metro_to_usdc(self):
+        """Trade METRO rewards for USDC"""
+        try:
+            # Get token addresses
+            token_x = self.metro_token_address
+            token_y = USDC_TOKEN
+
+            symbol_x, decimals_x, balance_x_wei, balance_x = self.get_token_balance(token_x)
+            symbol_y, decimals_y, balance_y_wei, balance_y = self.get_token_balance(token_y)
+
+            amount_in_x_wei = balance_x_wei   # Trade all available METRO
+            amount_in_x = amount_in_x_wei / (10 ** decimals_x)
+
+            amount_min_y_wei = 1  ### This can be optimised later with slippage control and output simulation using the lbp contract getLBPairInformation information
+
+            if amount_in_x_wei == 0:
+                print("No METRO tokens to trade")
+                return True
+
+            # Check that the token is approved for spending by the LBRouter contract, and if not approve it
+            if not self.check_token_approval(token_x, LBROUTER_CA):
+                token_x_approved = self.approve_token(token_x, LBROUTER_CA)
+            
+            path = (
+                [0, 4],                             # Bin steps for each hop    [METRO->S, S->USDC]
+                [0, 2],                             # Versions for each hop     [METRO->S, S->USDC]
+                [token_x, NATIVE_TOKEN, token_y]    # Token path (2 hops)
+            )
+                
+            trade_params = (
+                    amount_in_x_wei,         # Amount token x in
+                    amount_min_y_wei,        # Amount token y out min
+                    path,                # Path
+                    self.wallet_address, # To
+                    int(datetime.now().timestamp()) + 3600  # Deadline
+            )
+
+            trade_tx = self.lbrouter_contract.functions.swapExactTokensForTokens(
+                 *trade_params
+            ).build_transaction(
+                {
+                    'from': self.wallet_address,
+                    'gasPrice': self.web3.eth.gas_price,
+                    'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
+                }
+            )
+
+            # Estimate and optimize gas
+            optimized_gas = self.gas_optimizer(trade_tx, 500000)
+
+            # Add gas to transaction
+            trade_tx['gas'] = optimized_gas
+
+            # Sign and send transaction
+            signed_tx = self.web3.eth.account.sign_transaction(
+                trade_tx, self.account._private_key
+            )
+
+            tx_hash = self.web3.eth.send_raw_transaction(
+                signed_tx.rawTransaction
+            )
+
+            # Wait for transaction receipt
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+
+            if receipt.status == 1:
+                print(f"{amount_in_x} METRO successfully traded for USDC")
+                return True
+            else:
+                print("METRO to USDC trade failed")
+                return False
+
+        except Exception as e:
+            print(f"Failed to trade METRO to USDC: {e}")
+            return False
+        
 class CloudStorageHandler:
     def __init__(self, bucket_name):
         self.storage_client = storage.Client()
@@ -558,7 +683,7 @@ def manage_liquidity(request):
         current_position = None
         last_position = None
         valid_position = False
-        change_acceptable = False
+        change_acceptable = False        
 
         # Read and initialize operational data
         last_op_data = data.read_json_file(op_file)
@@ -626,10 +751,16 @@ def manage_liquidity(request):
             if current_date != last_date:
                 if sonic.claim_rewards(last_position):
                     print("Daily METRO rewards claim successful")
-                    if sonic.transfer_rewards():
-                        print("Daily rewards transfer successful")
-                    else:
-                        print("Daily rewards transfer failed")
+                    if REWARD_CONF == 0:
+                        if sonic.transfer_rewards():
+                            print("Daily rewards transfer successful")
+                        else:
+                            print("Daily rewards transfer failed")
+                    elif REWARD_CONF == 1:
+                        if sonic.trade_rewards():
+                            print("Daily rewards trade successful")
+                        else:
+                            print("Daily rewards trade failed")
                 else:
                     print("Daily METRO rewards claim failed")
 
