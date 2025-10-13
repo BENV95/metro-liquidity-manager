@@ -565,12 +565,14 @@ class SonicConnection:
         Returns:
             bool: True if trade successful, False otherwise
         """
+        print('Skipping METRO trade')
+
+        """
         try:
             # Get input token details
             token_x = self.metro_token_address
             symbol_x, decimals_x, balance_x_wei, balance_x = self.get_token_balance(token_x)
             amount_in_x_wei = balance_x_wei   # Trade all available METRO
-            
             
             # Check that there is something to trade
             if amount_in_x_wei == 0:
@@ -599,24 +601,24 @@ class SonicConnection:
                 
             else:
                 token_y = NATIVE_TOKEN
-                symbol_y, decimals_y, balance_y_wei, balance_y = self.get_native_balance()
+                symbol_y = symbol_s
 
                 amount_in_x_wei = min(balance_x_wei, 50 * (10 ** decimals_x))  # Trade enough METRO to get 5 S
                 trade_function = self.lbrouter_contract.functions.swapExactTokensForNATIVE
                 path = (
                     [0],                                # Bin steps for each hop    [METRO->USDC]
                     [0],                                # Versions for each hop     [METRO->USDC]
-                    [token_x, token_y]             # Token path (1 hop)
+                    [token_x, token_y]                  # Token path (1 hop)
                 )
             
             # Set minimum output amount
             amount_min_y_wei = 1  ### This can be optimised later with slippage control and output simulation using the lbp contract getLBPairInformation information
                 
             trade_params = (
-                    amount_in_x_wei,         # Amount token x in
-                    amount_min_y_wei,        # Amount token y out min
-                    path,                    # Path
-                    self.wallet_address, # To
+                    amount_in_x_wei,                        # Amount token x in
+                    amount_min_y_wei,                       # Amount token y out min
+                    path,                                   # Path
+                    self.wallet_address,                    # To
                     int(datetime.now().timestamp()) + 3600  # Deadline
             )
 
@@ -661,7 +663,8 @@ class SonicConnection:
         except Exception as e:
             print(f"Failed to trade METRO to USDC: {e}")
             return False
-        
+        """
+            
 class CloudStorageHandler:
     def __init__(self, bucket_name):
         self.storage_client = storage.Client()
