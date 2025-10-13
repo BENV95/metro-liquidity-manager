@@ -556,56 +556,72 @@ class SonicConnection:
             return False
 
     def trade_metro_to_usdc(self):
-        """Trade METRO rewards for USDC"""
+        """
+        Trade METRO rewards for USDC or S
+
+        Args:
+            None
+        
+        Returns:
+            bool: True if trade successful, False otherwise
+        """
         try:
             # Get input token details
             token_x = self.metro_token_address
             symbol_x, decimals_x, balance_x_wei, balance_x = self.get_token_balance(token_x)
             amount_in_x_wei = balance_x_wei   # Trade all available METRO
-            amount_in_x = amount_in_x_wei / (10 ** decimals_x)
+            
             
             # Check that there is something to trade
             if amount_in_x_wei == 0:
                 print("No METRO tokens to trade")
                 return True
+            
+            # Check native S balance
+            symbol_s, decimals_s, balance_s_wei, balance_s = self.get_native_balance()
 
             # Check that the token is approved for spending by the LBRouter contract, and if not approve it
             if not self.check_token_approval(token_x, LBROUTER_CA):
                 token_x_approved = self.approve_token(token_x, LBROUTER_CA)
 
-            # Trade to native token if balance for gas is low
-            if self.get_native_balance().balance_s > 5:
+            # Set trade parameters based on gas balance, if balance is low then trade to S first
+            if balance_s > 5:
+                token_y = USDC_TOKEN
+                symbol_y, decimals_y, balance_y_wei, balance_y = self.get_token_balance(token_y)
+
+                amount_in_x_wei = balance_x_wei
+                trade_function = self.lbrouter_contract.functions.swapExactTokensForTokens    
                 path = (
                     [0, 4],                             # Bin steps for each hop    [METRO->S, S->USDC]
                     [0, 2],                             # Versions for each hop     [METRO->S, S->USDC]
                     [token_x, NATIVE_TOKEN, token_y]    # Token path (2 hops)
                 )
-                token_y = USDC_TOKEN
-
+                
             else:
+                token_y = NATIVE_TOKEN
+                symbol_y, decimals_y, balance_y_wei, balance_y = self.get_native_balance()
+
+                amount_in_x_wei = min(balance_x_wei, 50 * (10 ** decimals_x))  # Trade enough METRO to get 5 S
+                trade_function = self.lbrouter_contract.functions.swapExactTokensForNATIVE
                 path = (
                     [0],                                # Bin steps for each hop    [METRO->USDC]
                     [0],                                # Versions for each hop     [METRO->USDC]
-                    [token_x, NATIVE_TOKEN]             # Token path (1 hop)
+                    [token_x, token_y]             # Token path (1 hop)
                 )
-                token_y = NATIVE_TOKEN
-
-            # Get output token details for logging
-            symbol_y, decimals_y, balance_y_wei, balance_y = self.get_token_balance(token_y)
-
+            
             # Set minimum output amount
             amount_min_y_wei = 1  ### This can be optimised later with slippage control and output simulation using the lbp contract getLBPairInformation information
                 
             trade_params = (
                     amount_in_x_wei,         # Amount token x in
                     amount_min_y_wei,        # Amount token y out min
-                    path,                # Path
+                    path,                    # Path
                     self.wallet_address, # To
                     int(datetime.now().timestamp()) + 3600  # Deadline
             )
 
-            trade_tx = self.lbrouter_contract.functions.swapExactTokensForTokens(
-                 *trade_params
+            trade_tx = trade_function(
+                *trade_params
             ).build_transaction(
                 {
                     'from': self.wallet_address,
@@ -631,6 +647,9 @@ class SonicConnection:
 
             # Wait for transaction receipt
             receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+
+            # Logging details
+            amount_in_x = amount_in_x_wei / (10 ** decimals_x)
 
             if receipt.status == 1:
                 print(f"{amount_in_x} {symbol_x} successfully traded for {symbol_y}")
@@ -750,12 +769,6 @@ def manage_liquidity(request):
             return {"status": "no_action", "reason": "Price out of limits"}
         
         price_changed = abs(current_price - last_price) > 0
-
-        print(f"Current price: {current_price}")
-        print(f"Last price: {last_price}")
-        print(f"Price difference: {current_price - last_price}")
-        print(f"Price difference percentage: {price_diff_pc}%")
-        print(f"Change acceptable: {change_acceptable}")
 
         if valid_position and not first_run:
 
