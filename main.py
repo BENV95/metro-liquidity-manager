@@ -187,13 +187,13 @@ class SonicConnection:
             "token_y": token_y
         }
     
-    def gas_optimizer(self, transaction, fallback_gas, buffer_factor=1.2):
+    def gas_optimizer(self, transaction, fallback_gas, buffer_factor=1.1):
         """
         Estimate and optimize gas for a transaction and add a safety buffer
 
         Args:
             transaction: The built transaction dictionary
-            buffer_factor: Safety factor to multiply the gas estimate by (default 1.2)
+            buffer_factor: Safety factor to multiply the gas estimate by (default 1.1)
 
         Returns:
             int: Estimated gas with buffer applied
@@ -423,7 +423,7 @@ class SonicConnection:
             )
 
             # Estimate and optimize gas
-            optimized_gas = self.gas_optimizer(remove_tx, 1000000)
+            optimized_gas = self.gas_optimizer(remove_tx, 500000)
 
             # Add gas to transaction
             remove_tx['gas'] = optimized_gas
@@ -466,10 +466,15 @@ class SonicConnection:
                     [bin_id]
                 ).build_transaction({
                     'from': self.wallet_address,
-                    'gas': 200000,
                     'gasPrice': self.web3.eth.gas_price,
                     'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
                 })
+
+                # Estimate and optimize gas
+                optimized_gas = self.gas_optimizer(claim_tx, 250000)
+
+                # Add gas to transaction
+                claim_tx['gas'] = optimized_gas
 
                  # Sign and send transaction
                 signed_tx = self.web3.eth.account.sign_transaction(
@@ -553,7 +558,7 @@ class SonicConnection:
             print("Failed to transfer rewards")
             return False
 
-    def trade_metro_to_usdc(self):
+    def trade_rewards(self):
         """
         Trade METRO rewards for USDC or S
 
@@ -764,11 +769,10 @@ def manage_liquidity(request):
             )
 
         if not in_limits or not change_acceptable:
-            return {"status": "no_action", "reason": "Price out of limits"}
-        
-        price_changed = abs(current_price - last_price) > 0
+            print("Price out of limits or change too high, no action taken")
+            return
 
-        sonic.trade_metro_to_usdc()
+        price_changed = abs(current_price - last_price) > 0
 
         if valid_position and not first_run:
 
@@ -782,7 +786,7 @@ def manage_liquidity(request):
                         else:
                             print("Daily rewards transfer failed")
                     elif REWARD_CONF == 1:
-                        if sonic.trade_metro_to_usdc():
+                        if sonic.trade_rewards():
                             print("Daily rewards trade successful")
                         else:
                             print("Daily rewards trade failed")
@@ -791,49 +795,55 @@ def manage_liquidity(request):
 
             # Liquidity management
             if price_changed:
+                print("Price changed")
                 try:
-                    print("Test: Attempting to remove liquidity")
-
                     if sonic.remove_liquidity(last_position):
                         sonic.claim_rewards(last_position)
                         current_position = sonic.add_liquidity()
-
                         if current_position:
-                            print("Test: Liquidity added successfully")
+                            print("Liquidity added successfully")
 
                         else:
                             failure_count(file_prefix)
-                            return {"error": "Failed to add liquidity"}
+                            print("Error: Failed to add liquidity")
+                            return
                         
                     else:
                         failure_count(file_prefix)
-                        return {"error": "Failed to remove liquidity"}
+                        print("Error: Failed to remove liquidity")
+                        return
 
                 except Exception as e:
-                    return {"error": f"Liquidity operation failed: {e}"}
+                    print(f"Liquidity operation failed: {e}")
+                    return
 
             else:
-                return {"status": "no_action", "reason": "Position exists, no price change"}
+                print("No operation required")
+                return
 
         else:
-            print("Test: Entering first time run logic")
+            print("No valid position found, adding initial liquidity")
             try:
                 current_position = sonic.add_liquidity()
                 if not current_position:
-                    return {"error": "Failed to add initial liquidity"}
+                    failure_count(file_prefix)
+                    print("Error: Failed to add initial liquidity")
+                    return
 
             except Exception as e:
-                return {"error": f"Failed to add liquidity: {e}"}
+                print(f"Failed to add initial liquidity: {e}")
+                return
 
         if current_position:
             data.write_json_file(position_file, current_position)
             data.write_json_file(price_file, current_price_data)
-        
-        return {"status": "success", "position": current_position}
+
+        print(f"Liquidity operation successful. Current position: {current_position}")
+        return
 
     except Exception as e:
-        print(f"error: Function failed: {str(e)}")
-        return {"error": f"Function failed: {str(e)}"}
+        print(f"Error: Function failed: {str(e)}")
+        return
 
 def failure_count(file_prefix):
     """Simple failure counter with emergency stop at 3"""
