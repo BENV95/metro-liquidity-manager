@@ -770,7 +770,7 @@ def manage_liquidity(request):
 
         if not in_limits or not change_acceptable:
             print("Price out of limits or change too high, no action taken")
-            return
+            return {"message": "Price out of limits or change too high, no action taken"}
 
         price_changed = abs(current_price - last_price) > 0
 
@@ -806,20 +806,20 @@ def manage_liquidity(request):
                         else:
                             failure_count(file_prefix)
                             print("Error: Failed to add liquidity")
-                            return
+                            return {"error": "Failed to add liquidity"}
                         
                     else:
                         failure_count(file_prefix)
                         print("Error: Failed to remove liquidity")
-                        return
+                        return {"error": "Failed to remove liquidity"}
 
                 except Exception as e:
                     print(f"Liquidity operation failed: {e}")
-                    return
+                    return {"error": f"Liquidity operation failed: {e}"}
 
             else:
                 print("No operation required")
-                return
+                return {"message": "No operation required"}
 
         else:
             print("No valid position found, adding initial liquidity")
@@ -828,22 +828,22 @@ def manage_liquidity(request):
                 if not current_position:
                     failure_count(file_prefix)
                     print("Error: Failed to add initial liquidity")
-                    return
+                    return {"error": "Failed to add initial liquidity"}
 
             except Exception as e:
                 print(f"Failed to add initial liquidity: {e}")
-                return
+                return {"error": f"Failed to add initial liquidity: {e}"}
 
         if current_position:
             data.write_json_file(position_file, current_position)
             data.write_json_file(price_file, current_price_data)
 
         print(f"Liquidity operation successful. Current position: {current_position}")
-        return
+        return {"message": "Liquidity operation successful", "position": current_position}
 
     except Exception as e:
         print(f"Error: Function failed: {str(e)}")
-        return
+        return {"error": f"Function failed: {str(e)}"}
 
 def failure_count(file_prefix):
     """Simple failure counter with emergency stop at 3"""
