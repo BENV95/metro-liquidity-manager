@@ -1,5 +1,6 @@
 import functions_framework
 from web3 import Web3
+from eth_utils import to_checksum_address
 import json
 from google.cloud import storage
 from google.cloud import scheduler_v1
@@ -10,16 +11,18 @@ import requests
 # Environment variables
 RPC_URL = os.environ.get('RPC_URL')
 
-NATIVE_TOKEN = '0x039e2fB66102314Ce7b64Ce5Ce3E5183bc94aD38' # Sonic native token (S)
-USDC_TOKEN = '0x29219dd400f2bf60e5a23d13be72b486d4038894' # USDC token address on Sonic
+NATIVE_TOKEN = to_checksum_address('0x039e2fB66102314Ce7b64Ce5Ce3E5183bc94aD38') # Sonic native token (S)
+USDC_TOKEN = to_checksum_address('0x29219dd400f2Bf60E5a23d13Be72B486D4038894') # USDC token address on Sonic
 
-LBP_CA = os.environ.get('LBP_CA')                   # Liquidity book pair contract
-LBROUTER_CA = os.environ.get('LBROUTER_CA')         # Liquidity router contract
-REWARDER_CA  = os.environ.get('REWARDER_CA')        # Pair rewarder contract
+LBP_CA = to_checksum_address(os.environ.get('LBP_CA'))                   # Liquidity book pair contract
+LBROUTER_CA = to_checksum_address(os.environ.get('LBROUTER_CA'))         # Liquidity router contract
+REWARDER_CA  = to_checksum_address(os.environ.get('REWARDER_CA'))        # Pair rewarder contract
+
+REWARD_WALLET = to_checksum_address(os.environ.get('REWARD_WALLET'))
+
 PRIVATE_KEY = os.environ.get('PRIVATE_KEY')
-REWARD_WALLET = os.environ.get('REWARD_WALLET')
 
-REWARD_CONF = os.environ.get('REWARD_CONF')
+REWARD_CONF = float(os.environ.get('REWARD_CONF'))  # 0 = transfer rewards, 1 = trade rewards for USDC
 
 PROJECT_ID = os.environ.get('PROJECT_ID')
 BUCKET_NAME = os.environ.get('BUCKET_NAME')
@@ -57,20 +60,20 @@ class SonicConnection:
         
         # Initialize contracts
         self.lbp_contract = self.web3.eth.contract(
-            address = self.web3.to_checksum_address(LBP_CA),
+            address = LBP_CA,
             abi = self.lbp_abi
             )
         self.lbrouter_contract = self.web3.eth.contract(
-            address = self.web3.to_checksum_address(LBROUTER_CA),
+            address = LBROUTER_CA,
             abi = self.lbrouter_abi
             )
         self.rewarder_contract = self.web3.eth.contract(
-            address = self.web3.to_checksum_address(REWARDER_CA),
+            address = REWARDER_CA,
             abi = self.rewarder_abi
         )
         
         # Get current METRO token address
-        self.metro_token_address = self.rewarder_contract.functions.getRewardToken().call()
+        self.metro_token_address = self.web3.to_checksum_address(self.rewarder_contract.functions.getRewardToken().call())
 
         # Find bin steps
         self.bin_step = self.lbp_contract.functions.getBinStep().call()
@@ -511,7 +514,7 @@ class SonicConnection:
                 return True
             
             transfer_tx = metro_contract.functions.transfer(
-                self.web3.to_checksum_address(REWARD_WALLET),
+                REWARD_WALLET,
                 balance_wei
             ).build_transaction(
                 {
@@ -562,11 +565,6 @@ class SonicConnection:
         """
 
         try:
-
-            #Debug prints
-            print(f"Trading METRO token: {self.metro_token_address}")
-            print(f"Expected METRO: 0x71E99522EaD5E21CF57F1f542Dc4ad2E841F7321")
-
             # Get input token details
             token_x = self.metro_token_address
             symbol_x, decimals_x, balance_x_wei, balance_x = self.get_token_balance(token_x)
@@ -612,16 +610,11 @@ class SonicConnection:
             # Set minimum output amount
             amount_min_y_wei = 1  ### This can be optimised later with slippage control and output simulation using the lbp contract getLBPairInformation information
 
-            # Debug prints
-            print(f"METRO address: {self.metro_token_address}")
-            print(f"Amount to trade: {amount_in_x_wei} wei ({amount_in_x_wei / 10**decimals_x} tokens)")
-            print(f"Path: {path}")
-
             trade_params = (
                     amount_in_x_wei,                        # Amount token x in
                     amount_min_y_wei,                       # Amount token y out min
                     path,                                   # Path
-                    self.web3.to_checksum_address(self.wallet_address),     # To address must be payable so requires checksum
+                    self.wallet_address,                    # To address must be payable so requires checksum
                     int(datetime.now().timestamp()) + 3600  # Deadline
             )
 
@@ -775,8 +768,6 @@ def manage_liquidity(request):
         
         price_changed = abs(current_price - last_price) > 0
 
-        # Debug print
-        print("Test: Attempting to trade METRO to USDC")
         sonic.trade_metro_to_usdc()
 
         if valid_position and not first_run:
