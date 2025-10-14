@@ -463,15 +463,10 @@ class SonicConnection:
                     [bin_id]
                 ).build_transaction({
                     'from': self.wallet_address,
+                    'gas': 200000,
                     'gasPrice': self.web3.eth.gas_price,
                     'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
                 })
-
-                # Estimate and optimize gas
-                optimized_gas = self.gas_optimizer(claim_tx, 500000)
-
-                # Add gas to transaction
-                claim_tx['gas'] = optimized_gas
 
                  # Sign and send transaction
                 signed_tx = self.web3.eth.account.sign_transaction(
@@ -565,10 +560,13 @@ class SonicConnection:
         Returns:
             bool: True if trade successful, False otherwise
         """
-        print('Skipping METRO trade')
 
-        """
         try:
+
+            #Debug prints
+            print(f"Trading METRO token: {self.metro_token_address}")
+            print(f"Expected METRO: 0x71E99522EaD5E21CF57F1f542Dc4ad2E841F7321")
+
             # Get input token details
             token_x = self.metro_token_address
             symbol_x, decimals_x, balance_x_wei, balance_x = self.get_token_balance(token_x)
@@ -613,12 +611,17 @@ class SonicConnection:
             
             # Set minimum output amount
             amount_min_y_wei = 1  ### This can be optimised later with slippage control and output simulation using the lbp contract getLBPairInformation information
-                
+
+            # Debug prints
+            print(f"METRO address: {self.metro_token_address}")
+            print(f"Amount to trade: {amount_in_x_wei} wei ({amount_in_x_wei / 10**decimals_x} tokens)")
+            print(f"Path: {path}")
+
             trade_params = (
                     amount_in_x_wei,                        # Amount token x in
                     amount_min_y_wei,                       # Amount token y out min
                     path,                                   # Path
-                    self.wallet_address,                    # To
+                    self.web3.to_checksum_address(self.wallet_address),     # To address must be payable so requires checksum
                     int(datetime.now().timestamp()) + 3600  # Deadline
             )
 
@@ -663,7 +666,6 @@ class SonicConnection:
         except Exception as e:
             print(f"Failed to trade METRO to USDC: {e}")
             return False
-        """
             
 class CloudStorageHandler:
     def __init__(self, bucket_name):
@@ -779,12 +781,12 @@ def manage_liquidity(request):
             if current_date != last_date:
                 if sonic.claim_rewards(last_position):
                     print("Daily METRO rewards claim successful")
-                    if REWARD_CONF == 0:
+                    if REWARD_CONF == '0':
                         if sonic.transfer_rewards():
                             print("Daily rewards transfer successful")
                         else:
                             print("Daily rewards transfer failed")
-                    elif REWARD_CONF == 1:
+                    elif REWARD_CONF == '1':
                         if sonic.trade_metro_to_usdc():
                             print("Daily rewards trade successful")
                         else:
@@ -828,6 +830,8 @@ def manage_liquidity(request):
             except Exception as e:
                 return {"error": f"Failed to add liquidity: {e}"}
 
+        # Debug print
+        print("Test: Attempting to trade METRO to USDC")
         sonic.trade_metro_to_usdc()
 
         if current_position:
