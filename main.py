@@ -775,18 +775,22 @@ def manage_liquidity(request):
         
         price_changed = abs(current_price - last_price) > 0
 
+        # Debug print
+        print("Test: Attempting to trade METRO to USDC")
+        sonic.trade_metro_to_usdc()
+
         if valid_position and not first_run:
 
             # Claim and transfer rewards daily
             if current_date != last_date:
                 if sonic.claim_rewards(last_position):
                     print("Daily METRO rewards claim successful")
-                    if REWARD_CONF == '0':
+                    if REWARD_CONF == 0:
                         if sonic.transfer_rewards():
                             print("Daily rewards transfer successful")
                         else:
                             print("Daily rewards transfer failed")
-                    elif REWARD_CONF == '1':
+                    elif REWARD_CONF == 1:
                         if sonic.trade_metro_to_usdc():
                             print("Daily rewards trade successful")
                         else:
@@ -829,10 +833,6 @@ def manage_liquidity(request):
 
             except Exception as e:
                 return {"error": f"Failed to add liquidity: {e}"}
-
-        # Debug print
-        print("Test: Attempting to trade METRO to USDC")
-        sonic.trade_metro_to_usdc()
 
         if current_position:
             data.write_json_file(position_file, current_position)
