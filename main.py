@@ -7,6 +7,8 @@ from google.cloud import scheduler_v1
 from datetime import datetime
 import os
 import requests
+import logging
+import sys
 
 # Environment variables
 RPC_URL = os.environ.get('RPC_URL')
@@ -35,6 +37,42 @@ MAX_CHANGE = float(os.environ.get('MAX_CHANGE'))
 
 PUSHOVER_TOKEN = os.environ.get('PUSHOVER_TOKEN')
 PUSHOVER_USER = os.environ.get('PUSHOVER_USER')
+
+def setup_logging():
+    """
+    Configure logging for the application
+    Returns configured loggers for different purposes
+    """
+
+    # Root logger configuration
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+
+    # Remove any existing handlers
+    root_logger.handlers.clear()
+
+    # Create console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.DEBUG)
+
+    # Create formatter
+    formatter = logging.Formatter(
+        fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    console_handler.setFormatter(formatter)
+
+    # Add handler to root logger
+    root_logger.addHandler(console_handler)
+
+    # Create specialised loggers
+    app_logger = logging.getLogger('app_logger')                        # General application flow
+    transaction_logger = logging.getLogger('transaction_logger')        # Blockchain transactions
+    gas_logger = logging.getLogger('gas_logger')                        # Gas optimisation
+
+    return app_logger, transaction_logger, gas_logger
+
+app_logger, transaction_logger, gas_logger = setup_logging()
 
 class SonicConnection:
     def __init__(self):
@@ -90,7 +128,7 @@ class SonicConnection:
             return token_x, token_y
 
         except Exception as e:
-            print("Failed to get token addresses")
+            app_logger.error(f"Failed to get token addresses: {e}")
             raise Exception(f"Failed to get token addresses: {e}")
 
     def get_token_decimals(self, token_address):
@@ -104,11 +142,17 @@ class SonicConnection:
             return decimals
 
         except Exception as e:
-            print("Failed to get token decimals")
+            app_logger.error(f"Failed to get token decimals: {e}")
             raise Exception(f"Failed to get token decimals: {e}")
 
     def get_token_symbol(self, token_address):
-        """Get the token symbol from the LBP contract"""
+        """
+        Get the token symbol from the ERC20 contract
+        Args:
+            token_address (str): The address of the token contract
+        Returns:
+            str: The symbol of the token
+        """
         try:
             token_contract = self.web3.eth.contract(
                 address = self.web3.to_checksum_address(token_address),
@@ -118,27 +162,41 @@ class SonicConnection:
             return symbol
 
         except Exception as e:
-            print("Failed to get token symbol")
+            app_logger.error(f"Failed to get token symbol: {e}")
             raise Exception(f"Failed to get token symbol: {e}")
 
     def get_pair_symbols(self) -> tuple:
-        """Get the token symbols for file naming"""
+        """
+        Get the token pair symbols from the LBP contract through get_token_addresses
+        Returns:
+            tuple: (symbol_x, symbol_y)
+        """
         try:
             token_x, token_y = self.get_token_addresses()
             symbol_x = self.get_token_symbol(token_x)
             symbol_y = self.get_token_symbol(token_y)
             return symbol_x, symbol_y
         except Exception as e:
-            print(f"Failed to get pair symbols: {e}")
+            app_logger.error(f"Failed to get pair symbols: {e}")
             return "UNKNOWN", "UNKNOWN"
     
     def get_file_prefix(self) -> str:
-        """Generate file prefix based on token pair"""
+        """
+        Generate LBP pair filename prefix based on token pair
+        Returns:
+            str: File prefix in the format "SYMBOLX_SYMBOLY"
+        """
         symbol_x, symbol_y = self.get_pair_symbols()
         return f"{symbol_x}_{symbol_y}"
 
     def get_token_balance(self, token_address) -> tuple:
-        """Get chosen token balance"""
+        """
+        Get chosen token balance
+        Args:
+            token_address (str): The address of the token contract
+        Returns:
+            tuple: (symbol, decimals, balance_wei, balance)
+        """
         try:
             # Create token contract instance
             token_contract = self.web3.eth.contract(
@@ -154,11 +212,15 @@ class SonicConnection:
             return symbol, decimals, balance_wei, balance
 
         except Exception as e:
-            print("Failed to get token balance")
+            app_logger.error(f"Failed to get token balance: {e}")
             raise Exception(f"Failed to get token balance: {e}")
     
     def get_native_balance(self) -> tuple:
-        """Get native token balance"""
+        """
+        Get native (S) token balance
+        Returns:
+            tuple: (symbol, decimals, balance_wei, balance)
+        """
         try:
             symbol = "S"
             ### ADD CONTRACT ADDRESS HERE
@@ -169,11 +231,18 @@ class SonicConnection:
             return symbol, decimals, balance_s_wei, balance_s
 
         except Exception as e:
-            print("Failed to get native balance")
+            app_logger.error(f"Failed to get native balance: {e}")
             raise Exception(f"Failed to get native balance: {e}")
     
     def get_current_price(self):
-        """Get the active bin price"""
+        """
+        Get the active bin price from the LBP contract
+        Returns:
+            dict: {
+                "price": float,
+                "token_x": str,
+                "token_y": str
+        """
         token_x, token_y = self.get_token_addresses()
         decimals_x = self.get_token_decimals(token_x)
         decimals_y = self.get_token_decimals(token_y)
@@ -187,7 +256,7 @@ class SonicConnection:
             "token_y": token_y
         }
     
-    def gas_optimizer(self, transaction, fallback_gas, buffer_factor=1.1):
+    def gas_optimizer(self, transaction, gas_fallback, buffer_factor=1.1):
         """
         Estimate and optimize gas for a transaction and add a safety buffer
 
@@ -200,34 +269,52 @@ class SonicConnection:
         """
         try:
             # Get base estimate from network
-            estimated_gas = self.web3.eth.estimate_gas(transaction)
+            gas_estimated = self.web3.eth.estimate_gas(transaction)
             # Apply buffer
-            optimized_gas = int(estimated_gas * buffer_factor)
-            return optimized_gas
+            gas_optimized = int(gas_estimated * buffer_factor)
+            return gas_optimized
 
         except Exception as e:
-            print(f"Gas estimation failed: {e}")
-            return fallback_gas
+            app_logger.error(f"Gas estimation failed: {e}")
+            return gas_fallback
 
     def check_token_approval(self, token_address: str, spender_address: str) -> bool:
-        """Check token approval status"""
-        token_contract = self.web3.eth.contract(
-                address = self.web3.to_checksum_address(token_address),
-                abi = self.erc20_contract_abi
-            )
+        """
+        Check token approval status
+        Args:
+            token_address (str): The address of the token contract
+            spender_address (str): The address of the spender (usually the LBP contract)
+        Returns:
+            bool: True if the token is approved, False otherwise
+        """
+        try:
+            token_contract = self.web3.eth.contract(
+                    address = self.web3.to_checksum_address(token_address),
+                    abi = self.erc20_contract_abi
+                )
+            
+            symbol = token_contract.functions.symbol().call()
+            decimals = token_contract.functions.decimals().call()
+            allowance = token_contract.functions.allowance(self.wallet_address, spender_address).call()
+            allowance_readable = allowance / (10**decimals)
+
+            allowance_sufficient = allowance > (10**decimals * 1000000)
+
+            return allowance_sufficient
         
-        symbol = token_contract.functions.symbol().call()
-        decimals = token_contract.functions.decimals().call()
-        allowance = token_contract.functions.allowance(self.wallet_address, spender_address).call()
-        allowance_readable = allowance / (10**decimals)
-
-        allowance_sufficient = allowance > (10**decimals * 1000000)
-
-        print(f"{symbol} {allowance_readable}")
-        return allowance_sufficient
+        except Exception as e:
+            app_logger.error(f"Failed to check token approval: {e}")
+            return False
 
     def approve_token(self, token_address: str, spender_address: str) -> bool:
-        """Approve token spending"""
+        """
+        Approve token spending
+        Args:
+            token_address: Address of the token to approve
+            spender_address: Address of the contract to approve spending for
+        Returns:
+            bool: True if approval successful, False otherwise
+        """
         try:
             token_contract = self.web3.eth.contract(
                 address = self.web3.to_checksum_address(token_address),
@@ -270,17 +357,31 @@ class SonicConnection:
             receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
 
             if receipt.status == 1:
-                print(f"{symbol} APPROVED")
+                self.log_transaction(
+                    tx_type="TOKEN_APPROVAL",
+                    receipt=receipt,
+                    gas_estimated=optimized_gas,
+                    details={
+                        "token": symbol,
+                        "spender": spender_address
+                    }
+                )
                 return True
+            
             else:
-                print(f"Falied to approve {symbol}")
+                app_logger.error(f"Failed to approve {symbol}")
                 return False
+            
         except Exception as e:
-            print(f"Failed to approve token: {e}")
+            app_logger.error(f"Failed to approve token: {e}")
             return False
 
     def add_liquidity(self):
-        """Add liquididity to the contract"""
+        """
+        Add liquidity to the contract
+        Returns:
+            dict: Details of the new position if successful, False otherwise
+        """
         try:
             # Get active ID
             active_id = self.lbp_contract.functions.getActiveId().call()
@@ -299,7 +400,7 @@ class SonicConnection:
 
             def position_amount(symbol, balance):
                 if balance == 0:
-                    print(f"No {symbol} available for liquidity")
+                    app_logger.error(f"No {symbol} available for liquidity")
                     return 0
                 elif balance <= 1:
                     return balance * 0.1
@@ -373,18 +474,34 @@ class SonicConnection:
                     "size_y": amount_y,
                     "to_address": self.wallet_address
                 }
-                print("Liquidity sucessfully added")
+                self.log_transaction(
+                    tx_type="ADD_LIQUIDITY",
+                    receipt=receipt,
+                    gas_estimated=optimized_gas,
+                    details={
+                        "bin_id": active_id,
+                        "amount_x": f"{amount_x:.4f} {symbol_x}",
+                        "amount_y": f"{amount_y:.4f} {symbol_y}"
+                    }
+                )
                 return new_position
+            
             else:
-                print("Add liquidity transaction failed")
+                transaction_logger.error("Add liquidity transaction failed")
                 return False
 
         except Exception as e:
-            print(f"Failed to add liquidity: {e}")
+            transaction_logger.error(f"Failed to add liquidity: {e}")
             return False
 
     def remove_liquidity(self, position) -> bool:
-        """Withdraw liquididity from the contract"""
+        """
+        Withdraw liquidity from the contract
+        Args:
+            position: Dictionary containing position details
+        Returns:
+            bool: True if liquidity was successfully withdrawn, False otherwise
+        """
         try:
             token_x, token_y = self.get_token_addresses()
             bin_id = int(position["bin_id"])
@@ -440,18 +557,38 @@ class SonicConnection:
             # Wait for transaction receipt
             receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
 
-            print(f"Liquidity sucessfully removed from bin {bin_id}")
-
-            return receipt.status == 1
+            if receipt.status == 1:
+                self.log_transaction(
+                    tx_type="REMOVE_LIQUIDITY",
+                    receipt=receipt,
+                    gas_estimated=optimized_gas,
+                    details={
+                        "bin_id": bin_id,
+                        "amount": amount
+                    }
+                )
+                return True
+            
+            else:
+                transaction_logger.error("Remove liquidity transaction failed")
+                return False
         
         except Exception as e:
-            print(f"Failed to remove liquidity: {e}")
+            transaction_logger.error(f"Failed to remove liquidity: {e}")
             return False
         
     def claim_rewards(self, position):
-        """Claim any pending rewards for the specified bin"""
+        """
+        Claim any pending rewards for the specified bin
+        Args:
+            position: Dictionary containing position details
+        Returns:
+            bool: True if rewards were successfully claimed, False otherwise
+        """
         try:
             bin_id = int(position["bin_id"])
+
+            symbol = self.get_token_symbol(self.metro_token_address)
 
             pending_rewards_wei = self.rewarder_contract.functions.getPendingRewards(
                 self.wallet_address,
@@ -471,7 +608,7 @@ class SonicConnection:
                 })
 
                 # Estimate and optimize gas
-                optimized_gas = self.gas_optimizer(claim_tx, 250000)
+                optimized_gas = self.gas_optimizer(claim_tx, 250000, buffer_factor=1.35)
 
                 # Add gas to transaction
                 claim_tx['gas'] = optimized_gas
@@ -489,21 +626,34 @@ class SonicConnection:
                 receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
 
                 if receipt.status == 1:
-                    print("Successfully claimed rewards")
+                    self.log_transaction(
+                        tx_type="CLAIM_REWARDS",
+                        receipt=receipt,
+                        gas_estimated=optimized_gas,
+                        details={
+                            "bin_id": bin_id,
+                            "amount": f"{pending_rewards:.4f} {symbol}"
+                        }
+                    )
                     return True
+                
                 else:
-                    print("Failed to claim rewards")
+                    transaction_logger.error("Failed to claim rewards")
                     return False
             else:
-                print("No rewards to claim")
+                transaction_logger.info("No rewards to claim")
                 return True
 
         except Exception as e:
-            print("Failed to claim rewards")
+            transaction_logger.error(f"Failed to claim rewards: {e}")
             return False
     
     def transfer_rewards(self):
-        """Send all reward tokens to central rewards wallet"""
+        """
+        Send all reward tokens to central rewards wallet
+        Returns:
+            bool: True if rewards were successfully transferred, False otherwise
+        """
         try:
             # Instantiate metro contract
             metro_contract = self.web3.eth.contract(
@@ -515,8 +665,8 @@ class SonicConnection:
             symbol, decimals, balance_wei, balance = self.get_token_balance(self.metro_token_address)
 
             if balance_wei <= 0:
-                print("No METRO tokens to send")
-                return True
+                app_logger.info(f"No {symbol} tokens to send")
+                return False
             
             transfer_tx = metro_contract.functions.transfer(
                 REWARD_WALLET,
@@ -548,23 +698,28 @@ class SonicConnection:
             receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
 
             if receipt.status == 1:
-                print("METRO successfully transferred")
+                self.log_transaction(
+                    tx_type="TRANSFER_REWARDS",
+                    receipt=receipt,
+                    gas_estimated=optimized_gas,
+                    details={
+                        "amount": f"{balance:.4f} {symbol}",
+                        "to_address": REWARD_WALLET
+                    }
+                )
                 return True
+            
             else:
-                print("METRO transfer failed")
+                transaction_logger.error("Failed to transfer rewards")
                 return False
             
         except Exception as e:
-            print("Failed to transfer rewards")
+            transaction_logger.error(f"Failed to transfer rewards: {e}")
             return False
 
     def trade_rewards(self):
         """
-        Trade METRO rewards for USDC or S
-
-        Args:
-            None
-        
+        Trade METRO rewards for USDC or S based on gas balance
         Returns:
             bool: True if trade successful, False otherwise
         """
@@ -577,7 +732,7 @@ class SonicConnection:
             
             # Check that there is something to trade
             if amount_in_x_wei == 0:
-                print("No METRO tokens to trade")
+                app_logger.info("No METRO tokens to trade")
                 return True
             
             # Check native S balance
@@ -602,7 +757,7 @@ class SonicConnection:
                 
             else:
                 token_y = NATIVE_TOKEN
-                symbol_y = symbol_s
+                symbol_y, decimals_y, balance_y_wei, balance_y = self.get_native_balance()
 
                 amount_in_x_wei = min(balance_x_wei, 50 * (10 ** decimals_x))  # Trade enough METRO to get 5 S
                 trade_function = self.lbrouter_contract.functions.swapExactTokensForNATIVE
@@ -655,15 +810,74 @@ class SonicConnection:
             amount_in_x = amount_in_x_wei / (10 ** decimals_x)
 
             if receipt.status == 1:
-                print(f"{amount_in_x} {symbol_x} successfully traded for {symbol_y}")
+
+                # Get token y balance after trade
+                if token_y == USDC_TOKEN:
+                    _, _, _, balance_y_post = self.get_token_balance(token_y)
+                else:
+                    _, _, _, balance_y_post = self.get_native_balance()
+
+                amount_out_y = balance_y_post - balance_y
+
+                self.log_transaction(
+                    tx_type="TRADE_REWARDS",
+                    receipt=receipt,
+                    gas_estimated=optimized_gas,
+                    details={
+                        "amount_in": f"{amount_in_x} {symbol_x}",
+                        "amount_out": f"{amount_out_y} {symbol_y}"
+                    }
+                )
                 return True
+            
             else:
-                print("METRO to USDC trade failed")
+                transaction_logger.error(f"{symbol_x} to {symbol_y} trade failed")
                 return False
 
         except Exception as e:
-            print(f"Failed to trade METRO to USDC: {e}")
+            transaction_logger.error(f"Failed to trade {symbol_x} to {symbol_y}: {e}")
             return False
+            
+    def log_transaction(self, tx_type, receipt, gas_estimated, details=None):
+        """
+        Logs structured data to transaction and gas loggers
+        Args:
+            tx_type: Type of transaction (e.g., 'TOKEN_APPROVAL', 'ADD_LIQUIDITY')
+            receipt: Transaction receipt from blockchain
+            estimated_gas: The gas limit that was set
+            details: Dictionary with additional transaction context
+        """
+        
+        tx_hash = receipt.transactionHash.hex()
+        gas_used = receipt.gasUsed
+        efficiency = (gas_used / gas_estimated) * 100
+
+        # Log to trasaction logger with structured data
+        transaction_logger.info(
+            f"{tx_type} completed",
+            extra={
+                "tx_type": tx_type,
+                "tx_hash": tx_hash[:10] + "...",
+                "gas_estimated": gas_estimated,
+                "gas_used": gas_used,
+                "efficiency_pc": round(efficiency, 1),
+                "details": details or {}
+            }
+        )
+        
+        # Log to gas logger for gas usage tracking
+        gas_logger.debug(
+            f"{tx_type}: {gas_estimated:,} allocated → {gas_used:,} used ({efficiency:.1f}%)"
+        )
+        
+        if efficiency > 95:
+            gas_logger.warning(
+                f"{tx_type}: Gas buffer too low ({efficiency:.1f}% efficiency), transaction may be reverted"
+            )
+        elif efficiency < 70:
+            gas_logger.info(
+                f"{tx_type}: Gas buffer too high ({efficiency:.1f}% efficiency), consider reducing buffer"
+            )
             
 class CloudStorageHandler:
     def __init__(self, bucket_name):
@@ -678,7 +892,7 @@ class CloudStorageHandler:
                 return None
             return json.loads(blob.download_as_text())
         except Exception as e:
-            print(f"Error reading {filename}: {e}")
+            app_logger.error(f"Error reading {filename}: {e}")
             return None
     
     def write_json_file(self, filename, data):
@@ -688,8 +902,8 @@ class CloudStorageHandler:
             blob.upload_from_string(json.dumps(data, indent=2))
             return True
         except Exception as e:
-            print(f"Error writing {filename}: {e}")
-            return False 
+            app_logger.error(f"Error writing {filename}: {e}")
+            return False
 
 # Global Sonic connection instance
 sonic = SonicConnection()
@@ -698,13 +912,18 @@ data = CloudStorageHandler(BUCKET_NAME)
 @functions_framework.http
 def manage_liquidity(request):
 
-    print("Function started")
+    app_logger.info("Liquidity management cycle started")
 
     try:
         # Check Sonic connection
         if not sonic.is_connected():
-            print("Failed to connect to Sonic network")
-            return {"error": "Failed to connect to Sonic network"}
+
+            app_logger.critical("Failed to connect to Sonic network")
+            return {
+                "status": "error",
+                "message": "Failed to connect to Sonic network",
+                "data": None
+                }
 
         # Generate filenames
         file_prefix = sonic.get_file_prefix()
@@ -768,9 +987,22 @@ def manage_liquidity(request):
                 last_position.get("token_y")
             )
 
+        app_logger.debug(
+            f"price check: current={current_price:.6f}, last={last_price:.6f}, "
+            f"diff={price_diff_pc:.2f}%, in_limits={in_limits}, change_acceptable={change_acceptable}"
+        )
+
         if not in_limits or not change_acceptable:
-            print("Price out of limits or change too high, no action taken")
-            return {"message": "Price out of limits or change too high, no action taken"}
+            return {
+                "status": "info",
+                "message": "Price out of limits or change too high, no action taken",
+                "data": {   "current_price": current_price,
+                            "last_price": last_price,
+                            "price_diff_pc": price_diff_pc,
+                            "in_limits": in_limits,
+                            "change_acceptable": change_acceptable
+                        }
+                }
 
         price_changed = abs(current_price - last_price) > 0
 
@@ -779,74 +1011,125 @@ def manage_liquidity(request):
             # Claim and transfer rewards daily
             if current_date != last_date:
                 if sonic.claim_rewards(last_position):
-                    print("Daily METRO rewards claim successful")
+                    app_logger.info("Daily reward claim successful")
+
                     if REWARD_CONF == 0:
+
                         if sonic.transfer_rewards():
-                            print("Daily rewards transfer successful")
+                            app_logger.info("Daily reward transfer successful")
                         else:
-                            print("Daily rewards transfer failed")
+                            app_logger.error("Daily reward transfer failed")
+
                     elif REWARD_CONF == 1:
+
                         if sonic.trade_rewards():
-                            print("Daily rewards trade successful")
+                            app_logger.info("Daily reward trade successful")                            
                         else:
-                            print("Daily rewards trade failed")
+                            app_logger.error("Daily reward trade failed")
+
                 else:
-                    print("Daily METRO rewards claim failed")
+                    app_logger.error("Daily reward claim failed")
 
             # Liquidity management
             if price_changed:
-                print("Price changed")
+                app_logger.info("Price changed, rebalancing position")
+
                 try:
                     if sonic.remove_liquidity(last_position):
-                        sonic.claim_rewards(last_position)
-                        current_position = sonic.add_liquidity()
-                        if current_position:
-                            print("Liquidity added successfully")
+                        app_logger.info("Liquidity removed successfully")
 
+                        if sonic.claim_rewards(last_position):
+                            app_logger.info("Rewards claimed successfully")
+                        else:
+                            app_logger.error("Rewards claim failed")
+
+                        current_position = sonic.add_liquidity()
+
+                        if current_position:
+                            app_logger.info("Liquidity added successfully")
                         else:
                             failure_count(file_prefix)
-                            print("Error: Failed to add liquidity")
-                            return {"error": "Failed to add liquidity"}
+                            app_logger.error("Failed to add liquidity")
+
+                            return {
+                                "status": "error",
+                                "message": "Failed to add liquidity",
+                                "data": None
+                                }
                         
                     else:
                         failure_count(file_prefix)
-                        print("Error: Failed to remove liquidity")
-                        return {"error": "Failed to remove liquidity"}
+                        app_logger.error("Failed to remove liquidity")
+                        return {
+                                "status": "error",
+                                "message": "Failed to remove liquidity",
+                                "data": None
+                                }
 
                 except Exception as e:
-                    print(f"Liquidity operation failed: {e}")
-                    return {"error": f"Liquidity operation failed: {e}"}
+                    app_logger.error(f"Liquidity operation failed: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"Liquidity operation failed: {e}",
+                        "data": None
+                    }
 
             else:
-                print("No operation required")
-                return {"message": "No operation required"}
+                return {
+                    "status": "info",
+                    "message": "No action required, price unchanged",
+                    "data": None
+                }
 
         else:
-            print("No valid position found, adding initial liquidity")
+            app_logger.info("First run, adding initial liquidity")
+
             try:
                 current_position = sonic.add_liquidity()
+
                 if not current_position:
                     failure_count(file_prefix)
-                    print("Error: Failed to add initial liquidity")
-                    return {"error": "Failed to add initial liquidity"}
+                    app_logger.error("Failed to add initial liquidity")
+                    return {
+                        "status": "error",
+                        "message": "Failed to add initial liquidity",
+                        "data": None
+                    }
 
             except Exception as e:
-                print(f"Failed to add initial liquidity: {e}")
-                return {"error": f"Failed to add initial liquidity: {e}"}
+                app_logger.error(f"Failed to add initial liquidity: {e}")
+                return {
+                    "status": "error",
+                    "message": f"Failed to add initial liquidity: {e}",
+                    "data": None
+                }
 
         if current_position:
             data.write_json_file(position_file, current_position)
             data.write_json_file(price_file, current_price_data)
 
-        print(f"Liquidity operation successful. Current position: {current_position}")
-        return {"message": "Liquidity operation successful", "position": current_position}
+        app_logger.info("Liquidity management cycle completed successfully")
+        app_logger.debug(f"Current position: {current_position}")
+        return {
+            "status": "success",
+            "message": "Liquidity operation successful",
+            "data": {
+                "position": current_position
+            }
+        }
 
     except Exception as e:
-        print(f"Error: Function failed: {str(e)}")
-        return {"error": f"Function failed: {str(e)}"}
+        app_logger.error(f"Function failed: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Function failed: {str(e)}",
+            "data": None
+        }
 
 def failure_count(file_prefix):
-    """Simple failure counter with emergency stop at 3"""
+    """
+    Simple failure counter with emergency stop at 3
+    """
     failure_file = f"{file_prefix}_failures.json"
     failure_data = data.read_json_file(failure_file) or {"count": 0}
     
@@ -854,18 +1137,32 @@ def failure_count(file_prefix):
     failure_data["last_failure"] = datetime.now().isoformat()
     
     data.write_json_file(failure_file, failure_data)
-    
-    if failure_data["count"] >= 3:
+
+    failure_count = failure_data["count"]
+    failure_limit = 3
+
+    if failure_count >= failure_limit:
+
+        app_logger.critical(f"{failure_count} consecutive failures detected for {file_prefix}, halting scheduler...")
 
         emergency_stop(file_prefix)
 
         failure_data["last_estop"] = datetime.now().isoformat()
         failure_data["count"] = 0
 
-    return failure_data["count"]
+    return {
+        "status": "critical",
+        "message": "Failure count reached limit",
+        "data": {
+            "failure_count": failure_count,
+            "failure_limit": failure_limit
+            }
+    }
 
 def emergency_stop(file_prefix):
-    """Pause the scheduler"""
+    """
+    Pause the scheduler to prevent further executions and send emergency notification
+    """
     client = scheduler_v1.CloudSchedulerClient()
     job_path = client.job_path(PROJECT_ID, SCHEDULER_LOCATION, SCHEDULER_JOB_NAME)
     try:
@@ -880,10 +1177,11 @@ def emergency_stop(file_prefix):
             1
         )
 
-        print("Scheduler paused successfully")
+        app_logger.info("Scheduler halted")
         return True
+    
     except Exception as e:
-        print(f"Failed to pause scheduler: {e}")
+        app_logger.error(f"Failed to pause scheduler: {e}")
         return False
 
 def push_notification(message, title, priority):
@@ -897,8 +1195,8 @@ def push_notification(message, title, priority):
 
     try:
         requests.post("https://api.pushover.net/1/messages.json", data=pushover_data)
-        print("Emergency notification sent")
+        app_logger.info("Emergency pushover notification sent")
         return True
     except Exception as e:
-        print(f"Failed to raise notification: {e}")
+        app_logger.error(f"Failed to send pushover notification: {e}")
         return False
