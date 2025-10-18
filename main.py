@@ -53,7 +53,7 @@ def setup_logging():
 
     # Create console handler
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.DEBUG)
+    console_handler.setLevel(logging.INFO)
 
     # Create formatter
     formatter = logging.Formatter(
