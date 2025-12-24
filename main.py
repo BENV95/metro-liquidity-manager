@@ -448,7 +448,7 @@ class SonicConnection:
             )
 
             # Estimate and optimize gas
-            optimized_gas = self.gas_optimizer(add_tx, 500000)
+            optimized_gas = self.gas_optimizer(add_tx, 500000, buffer_factor=1.2)
 
             # Add gas to transaction
             add_tx['gas'] = optimized_gas
@@ -540,7 +540,7 @@ class SonicConnection:
             )
 
             # Estimate and optimize gas
-            optimized_gas = self.gas_optimizer(remove_tx, 500000)
+            optimized_gas = self.gas_optimizer(remove_tx, 500000, buffer_factor=1.2)
 
             # Add gas to transaction
             remove_tx['gas'] = optimized_gas
@@ -715,6 +715,77 @@ class SonicConnection:
             
         except Exception as e:
             transaction_logger.error(f"Failed to transfer rewards: {e}")
+            return False
+        
+    def transfer_tokens(self, token_address: str) -> bool:
+        """
+        Send all specified tokens to central rewards wallet
+        Args:
+            token_address (str): The address of the token contract
+        Returns:
+            bool: True if tokens were successfully transferred, False otherwise
+        """
+        try:
+            # Instantiate token contract
+            token_contract = self.web3.eth.contract(
+                address = self.web3.to_checksum_address(token_address),
+                abi = self.erc20_contract_abi
+            )
+
+            # Check current token balance
+            symbol, decimals, balance_wei, balance = self.get_token_balance(token_address)
+
+            if balance_wei <= 0:
+                app_logger.info(f"No {symbol} tokens to send")
+                return False
+            
+            transfer_tx = token_contract.functions.transfer(
+                REWARD_WALLET,
+                balance_wei
+            ).build_transaction(
+                {
+                    'from': self.wallet_address,
+                    'gasPrice': self.web3.eth.gas_price,
+                    'nonce': self.web3.eth.get_transaction_count(self.wallet_address),
+                }
+            )
+
+            # Estimate and optimize gas
+            optimized_gas = self.gas_optimizer(transfer_tx, 500000)
+
+            # Add gas to transaction
+            transfer_tx['gas'] = optimized_gas
+
+            # Sign and send transaction
+            signed_tx = self.web3.eth.account.sign_transaction(
+                transfer_tx, self.account._private_key
+            )
+
+            tx_hash = self.web3.eth.send_raw_transaction(
+                signed_tx.rawTransaction
+            )
+
+            # Wait for transaction receipt
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+
+            if receipt.status == 1:
+                self.log_transaction(
+                    tx_type="TRANSFER_TOKENS",
+                    receipt=receipt,
+                    gas_estimated=optimized_gas,
+                    details={
+                        "amount": f"{balance:.4f} {symbol}",
+                        "to_address": REWARD_WALLET
+                    }
+                )
+                return True
+            
+            else:
+                transaction_logger.error(f"Failed to transfer {symbol} tokens")
+                return False
+            
+        except Exception as e:
+            transaction_logger.error(f"Failed to transfer tokens: {e}")
             return False
 
     def trade_rewards(self):
@@ -1013,14 +1084,19 @@ def manage_liquidity(request):
                 if sonic.claim_rewards(last_position):
                     app_logger.info("Daily reward claim successful")
 
-                    if REWARD_CONF == 0:
+                    # Reward handling based on configuration
+                    if REWARD_CONF == 0:    # Trade rewards to USDC and transfer USDC to rewards wallet
 
-                        if sonic.transfer_rewards():
-                            app_logger.info("Daily reward transfer successful")
+                        if sonic.trade_rewards():
+                            app_logger.info("Daily reward trade successful")
+                            if sonic.transfer_tokens(USDC_TOKEN):
+                                app_logger.info("USDC reward transfer successful")
+                            else:
+                                app_logger.error("USDC reward transfer failed")
                         else:
-                            app_logger.error("Daily reward transfer failed")
+                            app_logger.error("Daily reward trade failed")
 
-                    elif REWARD_CONF == 1:
+                    elif REWARD_CONF == 1:  # Trade rewards to USDC
 
                         if sonic.trade_rewards():
                             app_logger.info("Daily reward trade successful")                            
