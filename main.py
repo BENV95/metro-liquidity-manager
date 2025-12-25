@@ -735,13 +735,20 @@ class SonicConnection:
             # Check current token balance
             symbol, decimals, balance_wei, balance = self.get_token_balance(token_address)
 
-            if balance_wei <= 0:
-                app_logger.info(f"No {symbol} tokens to send")
+            if balance == 0:
+                app_logger.info(f"No {symbol} tokens to transfer")
                 return False
+            elif balance <= 0.2:
+                app_logger.info(f"Insufficient {symbol} tokens available to transfer")
+                return False
+            else:
+                amount = balance - 0.2
+
+            amount_wei = int(amount * (10 ** decimals))
             
             transfer_tx = token_contract.functions.transfer(
                 REWARD_WALLET,
-                balance_wei
+                amount_wei
             ).build_transaction(
                 {
                     'from': self.wallet_address,
