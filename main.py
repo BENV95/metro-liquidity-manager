@@ -642,7 +642,7 @@ class SonicConnection:
                     return False
             else:
                 transaction_logger.info("No rewards to claim")
-                return True
+                return False
 
         except Exception as e:
             transaction_logger.error(f"Failed to claim rewards: {e}")
@@ -717,11 +717,12 @@ class SonicConnection:
             transaction_logger.error(f"Failed to transfer rewards: {e}")
             return False
         
-    def transfer_tokens(self, token_address: str) -> bool:
+    def transfer_tokens(self, token_address: str, amount: float) -> bool:
         """
         Send all specified tokens to central rewards wallet
         Args:
             token_address (str): The address of the token contract
+            amount (float): The amount of tokens to transfer
         Returns:
             bool: True if tokens were successfully transferred, False otherwise
         """
@@ -735,14 +736,9 @@ class SonicConnection:
             # Check current token balance
             symbol, decimals, balance_wei, balance = self.get_token_balance(token_address)
 
-            if balance == 0:
+            if amount == 0:
                 app_logger.info(f"No {symbol} tokens to transfer")
                 return False
-            elif balance <= 0.2:
-                app_logger.info(f"Insufficient {symbol} tokens available to transfer")
-                return False
-            else:
-                amount = balance - 0.2
 
             amount_wei = int(amount * (10 ** decimals))
             
@@ -781,7 +777,7 @@ class SonicConnection:
                     receipt=receipt,
                     gas_estimated=optimized_gas,
                     details={
-                        "amount": f"{balance:.4f} {symbol}",
+                        "amount": f"{amount:.4f} {symbol}",
                         "to_address": REWARD_WALLET
                     }
                 )
@@ -795,11 +791,12 @@ class SonicConnection:
             transaction_logger.error(f"Failed to transfer tokens: {e}")
             return False
 
-    def trade_rewards(self):
+    def trade_rewards(self) -> tuple[bool, float]:
         """
         Trade METRO rewards for USDC or S based on gas balance
         Returns:
             bool: True if trade successful, False otherwise
+            float: Amount of USDC received from trade (0 if trade failed or traded to S)
         """
 
         try:
@@ -811,8 +808,8 @@ class SonicConnection:
             # Check that there is something to trade
             if amount_in_x_wei == 0:
                 app_logger.info("No METRO tokens to trade")
-                return True
-            
+                return False, 0
+
             # Check native S balance
             symbol_s, decimals_s, balance_s_wei, balance_s = self.get_native_balance()
 
@@ -892,10 +889,11 @@ class SonicConnection:
                 # Get token y balance after trade
                 if token_y == USDC_TOKEN:
                     _, _, _, balance_y_post = self.get_token_balance(token_y)
+                    amount_out_y = balance_y_post - balance_y
+                    amount_out_USDC = amount_out_y
                 else:
                     _, _, _, balance_y_post = self.get_native_balance()
-
-                amount_out_y = balance_y_post - balance_y
+                    amount_out_y = balance_y_post - balance_y
 
                 self.log_transaction(
                     tx_type="TRADE_REWARDS",
@@ -906,15 +904,15 @@ class SonicConnection:
                         "amount_out": f"{amount_out_y} {symbol_y}"
                     }
                 )
-                return True
+                return True, amount_out_USDC
             
             else:
                 transaction_logger.error(f"{symbol_x} to {symbol_y} trade failed")
-                return False
+                return False, 0
 
         except Exception as e:
             transaction_logger.error(f"Failed to trade {symbol_x} to {symbol_y}: {e}")
-            return False
+            return False, 0
             
     def log_transaction(self, tx_type, receipt, gas_estimated, details=None):
         """
@@ -1094,9 +1092,10 @@ def manage_liquidity(request):
                     # Reward handling based on configuration
                     if REWARD_CONF == 0:    # Trade rewards to USDC and transfer USDC to rewards wallet
 
-                        if sonic.trade_rewards():
+                        trade_success, usdc_out = sonic.trade_rewards()
+                        if trade_success and usdc_out > 0:
                             app_logger.info("Daily reward trade successful")
-                            if sonic.transfer_tokens(USDC_TOKEN):
+                            if sonic.transfer_tokens(USDC_TOKEN, usdc_out):
                                 app_logger.info("USDC reward transfer successful")
                             else:
                                 app_logger.error("USDC reward transfer failed")
@@ -1105,8 +1104,9 @@ def manage_liquidity(request):
 
                     elif REWARD_CONF == 1:  # Trade rewards to USDC
 
-                        if sonic.trade_rewards():
-                            app_logger.info("Daily reward trade successful")                            
+                        trade_success, _, = sonic.trade_rewards()
+                        if trade_success:
+                            app_logger.info("Daily reward trade successful")                           
                         else:
                             app_logger.error("Daily reward trade failed")
 
