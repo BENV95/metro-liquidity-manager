@@ -608,7 +608,7 @@ class SonicConnection:
                 })
 
                 # Estimate and optimize gas
-                optimized_gas = self.gas_optimizer(claim_tx, 250000, buffer_factor=1.35)
+                optimized_gas = self.gas_optimizer(claim_tx, 250000, buffer_factor=1.5)
 
                 # Add gas to transaction
                 claim_tx['gas'] = optimized_gas
